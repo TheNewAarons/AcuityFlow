@@ -38,7 +38,12 @@ def simulate_what_if(base_state: list, what_if_events: list) -> list:
                     signals_simulated.append({"status": "stable", "heart_rate": 80})
         
         # Calcular proyección
-        projected_score = calculate_weighted_workload(base_capacity=10, patient_count=patients, signals=signals_simulated)
+        # Nota: Idealmente deberíamos inyectar capacidades reales aquí también
+        # Para mantener el prototipo simple, usamos un mapa de capacidades comunes
+        CAPACITIES = {"ER-Trauma": 10, "ICU": 8, "Triage": 15, "Pediatrics": 12}
+        cap = CAPACITIES.get(zone, 10)
+
+        projected_score = calculate_weighted_workload(base_capacity=cap, patient_count=patients, signals=signals_simulated)
         
         projections.append({
             "zone": zone,
