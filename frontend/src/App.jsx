@@ -1,32 +1,69 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Activity, Users, AlertTriangle, CheckCircle, Zap } from 'lucide-react';
+import { LineChart, Line, ResponsiveContainer } from 'recharts';
 
 function App() {
   const [zones, setZones] = useState({});
-  const zonesBuffer = useRef({}); // Buffer mudo que no despierta a React
+  const [history, setHistory] = useState({});
+  
+  const zonesBuffer = useRef({}); // Buffer mudo para eventos actuales
+  const historyBuffer = useRef({}); // Buffer mudo para la gráfica temporal
+  
   const [simulations, setSimulations] = useState(null);
   const [isSimulating, setIsSimulating] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
 
   useEffect(() => {
+    // 1. Cargar historial desde la TSDB al arrancar la UI
+    fetch('http://localhost:8000/api/history/all')
+      .then(res => res.json())
+      .then(data => { if (!data.error) setHistory(data); })
+      .catch(console.error);
+
+    // 2. Conectar a Time-Series viva (Redis)
     const ws = new WebSocket('ws://localhost:8000/ws/acuity');
     ws.onopen = () => console.log('✅ Conectado a AcuityFlow WebSocket');
+    
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.error) {
         console.error("Backend reporta error:", data.error);
         return;
       }
-      // Almacenamos el latido en el buffer C sin activar a React Diffs
+      
+      // Almacenamos el latido en el buffer C
       zonesBuffer.current[data.zone] = data;
+      
+      // Almacenar el historial
+      const timeStr = new Date(data.timestamp * 1000).toLocaleTimeString();
+      if(!historyBuffer.current[data.zone]) historyBuffer.current[data.zone] = [];
+      historyBuffer.current[data.zone].push({ time: timeStr, acuity_score: data.acuity_score });
     };
     
-    // Limitador de Frecuencia (Throttle): Solo dibujamos en la UI 2 veces por segundo
-    // sin importar si entraron 100 o 1000 mensajes de telemetría en ese mismo tiempo
+    // Limitador de Frecuencia (Throttle): Transferencia limpia
     const renderIntervalProcess = setInterval(() => {
-      if (Object.keys(zonesBuffer.current).length > 0) {
-        setZones({ ...zonesBuffer.current });
+      let isZoneChanged = false;
+      let isHistoryChanged = false;
+      
+      if (Object.keys(zonesBuffer.current).length > 0) isZoneChanged = true;
+      if (Object.keys(historyBuffer.current).length > 0) isHistoryChanged = true;
+      
+      if (isZoneChanged) {
+        setZones(prev => ({ ...prev, ...zonesBuffer.current }));
       }
+      
+      if (isHistoryChanged) {
+        setHistory(prev => {
+          const next = { ...prev };
+          for (let z in historyBuffer.current) {
+            next[z] = [...(next[z] || []), ...historyBuffer.current[z]].slice(-20); // Ventana deslizante de 20 puntos
+          }
+          return next;
+        });
+        // Limpiamos el buffer de historia
+        historyBuffer.current = {};
+      }
+      
     }, 500);
 
     ws.onerror = (e) => console.error('❌ WebSocket Error - Asegúrate de que el backend (uvicorn) esté corriendo en el puerto 8000', e);
@@ -40,12 +77,10 @@ function App() {
 
   const runSimulation = async () => {
     setIsSimulating(true);
-    // Extraer estado actual o un mock si está vacío
     const baseState = Object.keys(zones).length > 0 
       ? Object.values(zones).map(z => ({ zone: z.zone, patients: z.patient_count }))
       : [{ zone: "ER-Trauma", patients: 12 }, { zone: "ICU", patients: 8 }];
 
-    // Simular un evento catástrofe: +15 pacientes en ER con alta severidad
     const events = [
       {
         zone: "ER-Trauma",
@@ -62,7 +97,6 @@ function App() {
       });
       const data = await res.json();
       
-      // Convert Array to object map for easy rendering
       const simMap = {};
       data.projections.forEach(p => simMap[p.zone] = p);
       setSimulations(simMap);
@@ -84,11 +118,19 @@ function App() {
         body: JSON.stringify({ zone, required_staff: 2 })
       });
       const data = await res.json();
-      setAgentStatus({ 
-        zone, 
-        status: 'done', 
-        message: `${data.status}! Reclutados: ${data.recruited?.join(', ') || 'Ninguno'}` 
-      });
+      const recruited = data.recruited ?? [];
+      const label = data.status === 'Success'
+        ? `Reclutados: ${recruited.join(', ')}`
+        : data.status === 'Partial'
+        ? `Parcial: ${recruited.join(', ')}`
+        : recruited.length === 0
+        ? 'Sin personal disponible — reiniciando pool...'
+        : 'Nadie aceptó el turno';
+      setAgentStatus({ zone, status: data.status === 'Success' ? 'done' : 'error', message: label });
+      // Auto-reset the staff pool when exhausted so next attempt works
+      if (recruited.length === 0) {
+        fetch('http://localhost:8000/api/staff/reset', { method: 'POST' }).catch(() => {});
+      }
       setTimeout(() => setAgentStatus(null), 8000);
     } catch(e) {
       setAgentStatus({ zone, status: 'error', message: 'Fallo de conexión' });
@@ -105,10 +147,10 @@ function App() {
       }
     }
     switch (status) {
-      case 'critical': return 'text-red-600 bg-red-100 border-red-500';
-      case 'warning': return 'text-orange-600 bg-orange-100 border-orange-500';
-      case 'stable': return 'text-emerald-600 bg-emerald-100 border-emerald-500';
-      default: return 'text-gray-600 bg-gray-100 border-gray-500';
+      case 'critical': return 'text-red-500 bg-red-50 border-red-500';
+      case 'warning': return 'text-orange-500 bg-orange-50 border-orange-500';
+      case 'stable': return 'text-emerald-500 bg-emerald-50 border-emerald-500';
+      default: return 'text-gray-500 bg-gray-50 border-gray-500';
     }
   };
 
@@ -188,40 +230,56 @@ function App() {
                 <p className="text-sm text-slate-400 mt-2">Puedes correr el Gemelo Digital para ver proyecciones teóricas.</p>
               </div>
             ) : (
-              Object.values(zones).map(zoneData => (
-                <div key={zoneData.zone} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden transition-all duration-300 hover:shadow-lg focus-within:ring-2 ring-indigo-500">
-                  <div className={`px-6 py-4 border-b-4 ${getStatusColor(zoneData.status).split(' ')[2]} flex justify-between items-center`}>
-                     <div>
-                        <h2 className="text-2xl font-bold text-slate-800">{zoneData.zone}</h2>
-                        <div className="flex items-center text-slate-500 mt-1">
-                          <Users className="w-4 h-4 mr-1" />
-                          <span className="text-sm font-medium">{zoneData.patient_count} pacientes</span>
-                        </div>
-                     </div>
-                     {getStatusIcon(zoneData.status)}
+              Object.values(zones).map(zoneData => {
+                 const zoneHist = history[zoneData.zone] || [];
+                 return (
+                  <div key={zoneData.zone} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden transition-all duration-300 focus-within:ring-2 ring-indigo-500">
+                    <div className={`px-6 py-4 border-b-4 ${getStatusColor(zoneData.status).split(' ')[2]} flex justify-between items-center`}>
+                       <div>
+                          <h2 className="text-2xl font-bold text-slate-800">{zoneData.zone}</h2>
+                          <div className="flex items-center text-slate-500 mt-1">
+                            <Users className="w-4 h-4 mr-1" />
+                            <span className="text-sm font-medium">{zoneData.patient_count} pacientes</span>
+                          </div>
+                       </div>
+                       {getStatusIcon(zoneData.status)}
+                    </div>
+                    
+                    <div className={`px-6 pt-8 pb-4 flex flex-col items-center justify-center relative ${getStatusColor(zoneData.status).split(' ')[1]}`}>
+                       <div className="text-6xl font-black tracking-tighter" style={{ color: 'inherit' }}>
+                          {zoneData.acuity_score}<span className="text-3xl font-bold opacity-75">%</span>
+                       </div>
+                       <p className="font-bold mt-2 opacity-80 uppercase tracking-widest text-xs">Carga Ponderada Base</p>
+                       
+                       {/* Curva Histórica TSDB con Recharts */}
+                       {zoneHist.length > 0 && (
+                          <div className="w-full h-24 mt-4 opacity-50 mix-blend-multiply">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={zoneHist}>
+                                <Line type="stepAfter" dataKey="acuity_score" stroke="currentColor" strokeWidth={3} dot={false} isAnimationActive={false} />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+                       )}
+                    </div>
+                    
+                    <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-between items-center h-16">
+                      <span className="text-xs text-slate-400 font-medium tracking-wider">Última act. {new Date(zoneData.timestamp * 1000).toLocaleTimeString()}</span>
+                       {zoneData.status === 'critical' && (
+                         agentStatus?.zone === zoneData.zone ? (
+                           <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${agentStatus.status === 'calling' ? 'bg-indigo-100 text-indigo-700 animate-pulse' : 'bg-emerald-100 text-emerald-700'}`}>
+                             {agentStatus.message}
+                           </span>
+                         ) : (
+                           <button onClick={() => triggerAgent(zoneData.zone)} className="text-xs font-bold text-white bg-red-600 px-4 py-2 rounded-full hover:bg-red-700 transition shadow-sm hover:shadow">
+                             Intervención IA
+                           </button>
+                         )
+                       )}
+                    </div>
                   </div>
-                  <div className={`px-6 py-8 flex flex-col items-center justify-center ${getStatusColor(zoneData.status).split(' ')[1]}`}>
-                     <div className="text-6xl font-black tracking-tighter" style={{ color: 'inherit' }}>
-                        {zoneData.acuity_score}<span className="text-3xl font-bold opacity-75">%</span>
-                     </div>
-                     <p className="font-bold mt-2 opacity-80 uppercase tracking-widest text-xs">Carga Ponderada Base</p>
-                  </div>
-                  <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-between items-center h-16">
-                    <span className="text-xs text-slate-400 font-medium tracking-wider">Última act. {new Date(zoneData.timestamp * 1000).toLocaleTimeString()}</span>
-                     {zoneData.status === 'critical' && (
-                       agentStatus?.zone === zoneData.zone ? (
-                         <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${agentStatus.status === 'calling' ? 'bg-indigo-100 text-indigo-700 animate-pulse' : 'bg-green-100 text-green-700'}`}>
-                           {agentStatus.message}
-                         </span>
-                       ) : (
-                         <button onClick={() => triggerAgent(zoneData.zone)} className="text-xs font-bold text-white bg-red-600 px-4 py-2 rounded-full hover:bg-red-700 transition shadow-sm hover:shadow">
-                           Intervención IA
-                         </button>
-                       )
-                     )}
-                  </div>
-                </div>
-              ))
+                 );
+              })
             )}
           </div>
         </div>

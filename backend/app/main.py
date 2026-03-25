@@ -18,12 +18,17 @@ import os
 async def seed_db():
     async with database.SessionLocal() as db:
         result = await db.execute(select(models.Staff))
-        if len(result.scalars().all()) == 0:
+        existing = result.scalars().all()
+        if len(existing) == 0:
             names = ["Dr. House", "Dr. Cuddy", "Nurse Jackie", "Carla E.", "Dr. Carter", "Nurse Hathaway", "Dr. Cox", "J.D.", "Turk", "Elliot Reid"]
             roles = ["Doctor"] * 4 + ["RN"] * 6
             for name, role in zip(names, roles):
                 db.add(models.Staff(name=name, role=role))
-            await db.commit()
+        else:
+            # Reset availability on every startup so the pool never stays depleted
+            for staff in existing:
+                staff.is_available = True
+        await db.commit()
 
 # --- REDIS CONNECTION MANAGER & BROADCASTER ---
 redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -71,6 +76,18 @@ async def redis_listener():
                         "status": "critical" if score >= 80 else "warning" if score >= 60 else "stable",
                         "timestamp": data["timestamp"]
                     }
+                    
+                    # Persistencia Histórica (Time-Series Local DB)
+                    async with database.SessionLocal() as db_session:
+                        history = models.ZoneHistory(
+                            zone=data["zone"],
+                            timestamp=data["timestamp"],
+                            acuity_score=score,
+                            patient_count=data["patient_count"]
+                        )
+                        db_session.add(history)
+                        await db_session.commit()
+                        
                     await manager.broadcast(json.dumps(payload))
         except asyncio.CancelledError:
             break
@@ -131,11 +148,56 @@ async def get_staff(db: AsyncSession = Depends(database.get_db)):
     except Exception as e:
         return {"error": str(e)}
 
+@app.post("/api/staff/reset")
+async def reset_staff_availability(db: AsyncSession = Depends(database.get_db)):
+    """Resets all staff to available=True so the recruitment pool is restored."""
+    try:
+        result = await db.execute(select(models.Staff))
+        staff_list = result.scalars().all()
+        for s in staff_list:
+            s.is_available = True
+        await db.commit()
+        return {"status": "ok", "reset": len(staff_list)}
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/api/zones")
 async def get_zones(db: AsyncSession = Depends(database.get_db)):
     try:
         result = await db.execute(select(models.PatientZone))
         return result.scalars().all()
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/history/all")
+async def get_all_history(limit: int = 20, db: AsyncSession = Depends(database.get_db)):
+    """ 
+    Recupera los últimos N registros generados en la base histórica estacionaria 
+    para poder re-dibujar el historial del hospital tras un F5 (Recargo de página).
+    """
+    from sqlalchemy import desc
+    try:
+        # Obtenemos una ventana representativa (N = 20 puntos por zona)
+        result = await db.execute(
+            select(models.ZoneHistory)
+            .order_by(desc(models.ZoneHistory.timestamp))
+            .limit(limit * 4) 
+        )
+        records = result.scalars().all()
+        history = {}
+        # Invertimos para que el tiempo fluya de Izquierda (pasado) a Derecha (presente)
+        for r in reversed(records):
+            if r.zone not in history: 
+                history[r.zone] = []
+            
+            # Formateamos timestamp
+            from datetime import datetime
+            dt = datetime.fromtimestamp(r.timestamp).strftime('%H:%M:%S')
+            history[r.zone].append({"time": dt, "acuity_score": r.acuity_score})
+            if len(history[r.zone]) > limit: 
+                history[r.zone].pop(0)
+                
+        return history
     except Exception as e:
         return {"error": str(e)}
 
