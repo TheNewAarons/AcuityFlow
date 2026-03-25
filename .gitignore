@@ -1,0 +1,57 @@
+# ==============================
+# AcuityFlow .gitignore
+# ==============================
+
+# ------------------------------
+# Mac OS
+# ------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ------------------------------
+# Frontend (React + Vite)
+# ------------------------------
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+frontend/.eslintcache
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+
+# ------------------------------
+# Backend (Python + FastAPI)
+# ------------------------------
+# Entornos virtuales
+backend/.venv/
+backend/venv/
+backend/env/
+ENV/
+env.bak/
+venv.bak/
+
+# Archivos compilados y caché
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Base de datos local
+# Evita subir la DB local para no generar conflictos entre desarrolladores
+backend/acuityflow.db
+backend/*.sqlite3
+backend/*.db
+
+# ------------------------------
+# Secrets y Entornos (Env)
+# ------------------------------
+.env
+.env.*
+!.env.example
+secret_keys.txt
+*.pem
