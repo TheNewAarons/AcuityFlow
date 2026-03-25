@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from . import models, database
 from .acuity_engine import calculate_weighted_workload
 from .digital_twin import simulate_what_if
-from .ai_agent import trigger_autonomous_recruitment
+from .ai_agent import trigger_autonomous_recruitment, get_agent_logs
 import redis.asyncio as redis_async
 import asyncio
 import json
@@ -224,6 +224,10 @@ class AgentTriggerReq(BaseModel):
 async def api_trigger_agent(req: AgentTriggerReq, db: AsyncSession = Depends(database.get_db)):
     result = await trigger_autonomous_recruitment(req.zone, req.required_staff, db)
     return result
+
+@app.get("/api/agent/logs")
+async def api_get_agent_logs():
+    return get_agent_logs()
 
 # WebSocket endpoint V2 optimizado (1 conexión Redis para N clientes Web)
 @app.websocket("/ws/acuity")

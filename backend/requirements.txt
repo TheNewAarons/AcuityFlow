@@ -8,3 +8,8 @@ pydantic
 pydantic-settings
 aiosqlite
 greenlet
+langchain
+langchain-openai
+langchain-google-genai
+langgraph
+python-dotenv

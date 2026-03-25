@@ -1,64 +1,145 @@
+"""
+AcuityFlow - Autonomous Recruitment Agent (LangChain ReAct)
+Refactored to be FULLY ASYNC to prevent event loop issues in FastAPI.
+"""
+import os
 import asyncio
+from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from . import models
+from langchain_core.messages import SystemMessage, HumanMessage
+from langgraph.prebuilt import create_react_agent
 
-async def trigger_autonomous_recruitment(zone: str, required_staff: int, db: AsyncSession):
-    """
-    Simula un Agente de IA autónomo. En lugar de reglas estáticas, este módulo interactuaría
-    con un modelo fundacional (LLM).
-    Refactorizado V2: Usa un Event Loop asíncrono eficiente (AsyncSession).
-    """
-    print(f"\n🤖 [IA AGENT] ==== INICIANDO ORQUESTACIÓN ====")
-    print(f"🤖 [IA AGENT] Detectado déficit crítico en {zone}. Misión: reclutar {required_staff} profesionales.")
-    
-    # 1. Búsqueda asíncrona y no bloqueante en DB
-    result = await db.execute(select(models.Staff).filter(models.Staff.is_available == True))
-    available_staff = result.scalars().all()
-    
-    if not available_staff:
-        print("🤖 [IA AGENT] CRÍTICO: No se encontraron candidatos en la base de datos de RR.HH.")
-        print(f"🤖 [IA AGENT] ==== FIN DE ORQUESTACIÓN ====\n")
-        return {"status": "Escalation Required (No beds/staff available)", "recruited": []}
-        
-    # 2. IA evalúa candidatos
-    selected_candidates = available_staff[:required_staff * 2] 
-    
-    recruited = []
-    
-    for candidate in selected_candidates:
-        print(f"🤖 [IA AGENT] -> Contactando a {candidate.name} ({candidate.role})...")
-        await asyncio.sleep(1.5)
-        
-        import random
-        if random.random() > 0.4:
-            print(f"   ✅ [RESPUESTA] {candidate.name}: 'Acepto el turno extra. Voy en camino.'")
-            
-            candidate.is_available = False
-            
-            shift = models.Shift(
-                staff_id=candidate.id,
-                zone=zone
-            )
-            db.add(shift)
-            
-            recruited.append(candidate.name)
-            
-            if len(recruited) >= required_staff:
-                print(f"🤖 [IA AGENT] Cupo lleno. Cancelando mensajes pendientes a otros candidatos.")
-                break
-        else:
-            print(f"   ❌ [RESPUESTA] {candidate.name}: 'Lo siento, no puedo cubrir el turno hoy.'")
-            
-    # Asíncronamente enviamos el commit a la base de datos sin trabar a FastApi
-    await db.commit()
-    
-    print(f"🤖 [IA AGENT] Resumen de Misión: Reclutados {len(recruited)} de {required_staff}.")
-    print(f"🤖 [IA AGENT] ==== FIN DE ORQUESTACIÓN ====\n")
-    
-    if len(recruited) >= required_staff:
-        return {"status": "Success", "message": "Déficit resuelto exitosamente", "recruited": recruited}
-    elif len(recruited) > 0:
-        return {"status": "Partial", "message": "Se logró mitigación parcial", "recruited": recruited}
+from .agent_tools import get_available_staff, negotiate_shift, book_shift
+
+load_dotenv()
+
+_agent_logs: list[dict] = []
+
+SYSTEM_PROMPT = """You are AcuityFlow Orchestrator, an autonomous AI agent coordinating emergency medical staffing.
+Your mission: recruit the required number of qualified healthcare professionals for a critical staffing deficit.
+
+Protocol:
+1. Search available candidates (Spanish: "buscar personal disponible").
+2. Negotiate with each candidate in Spanish (be human, respect their fatigue history).
+3. If they accept, book the shift immediately.
+4. Stop when you meet the quota or exhaustion.
+
+Respond in Spanish to the coordinator and candidates."""
+
+def _check_api_keys():
+    provider = os.getenv("LLM_PROVIDER", "openai").lower()
+    if provider == "google":
+        key = os.getenv("GOOGLE_API_KEY")
     else:
-        return {"status": "Failed", "message": "Nadie aceptó el turno", "recruited": []}
+        key = os.getenv("OPENAI_API_KEY")
+    return key and not key.startswith("sk-...your-key") and not key.startswith("AIza...your-key")
+
+def _build_llm():
+    provider = os.getenv("LLM_PROVIDER", "openai").lower()
+    if provider == "google":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
+        )
+    else:
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model="gpt-4o-mini",
+            temperature=0.5,
+            api_key=os.getenv("OPENAI_API_KEY"),
+        )
+
+async def trigger_autonomous_recruitment(zone: str, required_staff: int, db: AsyncSession) -> dict:
+    """
+    Asynchronously triggers the LangChain agent.
+    """
+    print(f"\n[IA AGENT] ==== INICIANDO ORQUESTACION ASINCRONA ====")
+    
+    if not _check_api_keys():
+        msg = "ERROR: No hay una API Key válida en el archivo .env. Por favor, configura tu OPENAI_API_KEY o GOOGLE_API_KEY."
+        print(f"[IA AGENT] {msg}")
+        return {"status": "Error", "message": msg, "recruited": [], "agent_log": msg}
+
+    # Define tool wrappers that inject the 'db' session
+    async def get_staff_bound(zone: str) -> str:
+        return await get_available_staff.ainvoke({"zone": zone, "db": db})
+
+    async def book_shift_bound(candidate_name: str, zone: str) -> str:
+        return await book_shift.ainvoke({"candidate_name": candidate_name, "zone": zone, "db": db})
+
+    # Tool list for the agent
+    # Note: negotiate_shift doesn't need DB
+    tools = [get_staff_bound, negotiate_shift, book_shift_bound]
+    
+    # Give the bound tools better names/descriptions so the agent knows how to use them
+    get_staff_bound.__name__ = "get_available_staff"
+    get_staff_bound.__doc__ = get_available_staff.description
+    book_shift_bound.__name__ = "book_shift"
+    book_shift_bound.__doc__ = book_shift.description
+
+    llm = _build_llm()
+    agent = create_react_agent(llm, tools)
+
+    user_message = (
+        f"CRISIS EN {zone.upper()}.\n"
+        f"Necesitamos {required_staff} profesional(es). Zona: {zone}"
+    )
+
+    try:
+        # Use ainvoke for true asynchronicity
+        result = await agent.ainvoke({
+            "messages": [
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=user_message),
+            ]
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "Error", "message": str(e), "recruited": [], "agent_log": f"Traceback: {str(e)}"}
+
+    messages = result.get("messages", [])
+    final_message = ""
+    for msg in reversed(messages):
+        if hasattr(msg, "content") and msg.content:
+            final_message = msg.content
+            break
+
+    # Persist and log
+    recruited = await _get_newly_booked_staff(db, zone)
+    
+    log_entry = {
+        "zone": zone,
+        "required": required_staff,
+        "recruited": recruited,
+        "agent_summary": final_message,
+        "timestamp": os.getpid() # placeholder
+    }
+    _agent_logs.append(log_entry)
+
+    print(f"[IA AGENT] Resumen: {len(recruited)} reclutados. Status: {'Success' if len(recruited) >= required_staff else 'Partial' if recruited else 'Failed'}")
+    
+    return {
+        "status": "Success" if len(recruited) >= required_staff else "Partial" if recruited else "Failed",
+        "message": f"Déficit {'resuelto' if len(recruited) >= required_staff else 'mitigado' if recruited else 'no resuelto'}.",
+        "recruited": recruited,
+        "agent_log": final_message,
+    }
+
+async def _get_newly_booked_staff(db: AsyncSession, zone: str) -> list[str]:
+    from sqlalchemy.future import select
+    from . import models
+    try:
+        # Just check staff marked unavailable in this session for this zone
+        result = await db.execute(
+            select(models.Staff).join(models.Shift, models.Staff.id == models.Shift.staff_id)
+            .filter(models.Shift.zone == zone)
+            .filter(models.Staff.is_available == False)
+        )
+        return list(set([s.name for s in result.scalars().all()]))
+    except:
+        return []
+
+def get_agent_logs():
+    return list(reversed(_agent_logs))
