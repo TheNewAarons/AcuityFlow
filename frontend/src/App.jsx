@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Activity, Users, AlertTriangle, CheckCircle, Zap } from 'lucide-react';
 
 function App() {
   const [zones, setZones] = useState({});
+  const zonesBuffer = useRef({}); // Buffer mudo que no despierta a React
   const [simulations, setSimulations] = useState(null);
   const [isSimulating, setIsSimulating] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
@@ -16,14 +17,25 @@ function App() {
         console.error("Backend reporta error:", data.error);
         return;
       }
-      setZones(prev => ({
-        ...prev,
-        [data.zone]: data
-      }));
+      // Almacenamos el latido en el buffer C sin activar a React Diffs
+      zonesBuffer.current[data.zone] = data;
     };
+    
+    // Limitador de Frecuencia (Throttle): Solo dibujamos en la UI 2 veces por segundo
+    // sin importar si entraron 100 o 1000 mensajes de telemetría en ese mismo tiempo
+    const renderIntervalProcess = setInterval(() => {
+      if (Object.keys(zonesBuffer.current).length > 0) {
+        setZones({ ...zonesBuffer.current });
+      }
+    }, 500);
+
     ws.onerror = (e) => console.error('❌ WebSocket Error - Asegúrate de que el backend (uvicorn) esté corriendo en el puerto 8000', e);
     ws.onclose = () => console.log('⚠️ WebSocket Desconectado');
-    return () => ws.close();
+    
+    return () => {
+      clearInterval(renderIntervalProcess);
+      ws.close();
+    };
   }, []);
 
   const runSimulation = async () => {
