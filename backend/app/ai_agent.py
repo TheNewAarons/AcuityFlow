@@ -1,41 +1,39 @@
 import asyncio
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from . import models
 
-async def trigger_autonomous_recruitment(zone: str, required_staff: int, db: Session):
+async def trigger_autonomous_recruitment(zone: str, required_staff: int, db: AsyncSession):
     """
     Simula un Agente de IA autónomo. En lugar de reglas estáticas, este módulo interactuaría
-    con un modelo fundacional (LLM) proporcionándole el contexto del hospital para que elija 
-    a los candidatos idóneos y orqueste la comunicación.
+    con un modelo fundacional (LLM).
+    Refactorizado V2: Usa un Event Loop asíncrono eficiente (AsyncSession).
     """
     print(f"\n🤖 [IA AGENT] ==== INICIANDO ORQUESTACIÓN ====")
     print(f"🤖 [IA AGENT] Detectado déficit crítico en {zone}. Misión: reclutar {required_staff} profesionales.")
     
-    # 1. El Agente Inteligente busca personal disponible en la DB
-    available_staff = db.query(models.Staff).filter(models.Staff.is_available == True).all()
+    # 1. Búsqueda asíncrona y no bloqueante en DB
+    result = await db.execute(select(models.Staff).filter(models.Staff.is_available == True))
+    available_staff = result.scalars().all()
     
     if not available_staff:
         print("🤖 [IA AGENT] CRÍTICO: No se encontraron candidatos en la base de datos de RR.HH.")
         print(f"🤖 [IA AGENT] ==== FIN DE ORQUESTACIÓN ====\n")
         return {"status": "Escalation Required (No beds/staff available)", "recruited": []}
         
-    # 2. La IA evalúa y perfila candidatos. (Aquí simulamos seleccionando basados en necesidad)
-    # Llama a un extra margen de candidatos (p. ej. el doble) para asegurar que algunos acepten
+    # 2. IA evalúa candidatos
     selected_candidates = available_staff[:required_staff * 2] 
     
     recruited = []
     
-    # 3. Orquestación Autónoma: El LLM redacta y envía mensajes SMS / Emails contextuales
     for candidate in selected_candidates:
-        print(f"🤖 [IA AGENT] -> Contactando a {candidate.name} ({candidate.role}) vía SMS/Twilio...")
-        await asyncio.sleep(1.5) # Simula retraso de la red y tiempo de "lectura" del empleado
+        print(f"🤖 [IA AGENT] -> Contactando a {candidate.name} ({candidate.role})...")
+        await asyncio.sleep(1.5)
         
-        # Simular respuesta del empleado interactuando con el bot de RRHH (Ej: "Acepto" por WhatsApp)
         import random
-        if random.random() > 0.4: # 60% probabilidad de aceptar
+        if random.random() > 0.4:
             print(f"   ✅ [RESPUESTA] {candidate.name}: 'Acepto el turno extra. Voy en camino.'")
             
-            # Actualizar DB y panel de control vía IA
             candidate.is_available = False
             
             shift = models.Shift(
@@ -46,14 +44,14 @@ async def trigger_autonomous_recruitment(zone: str, required_staff: int, db: Ses
             
             recruited.append(candidate.name)
             
-            # Si hemos llenado la vacante, paramos de spammear otros empleados
             if len(recruited) >= required_staff:
                 print(f"🤖 [IA AGENT] Cupo lleno. Cancelando mensajes pendientes a otros candidatos.")
                 break
         else:
             print(f"   ❌ [RESPUESTA] {candidate.name}: 'Lo siento, no puedo cubrir el turno hoy.'")
             
-    db.commit()
+    # Asíncronamente enviamos el commit a la base de datos sin trabar a FastApi
+    await db.commit()
     
     print(f"🤖 [IA AGENT] Resumen de Misión: Reclutados {len(recruited)} de {required_staff}.")
     print(f"🤖 [IA AGENT] ==== FIN DE ORQUESTACIÓN ====\n")
