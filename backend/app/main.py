@@ -23,8 +23,9 @@ async def seed_db():
         if len(existing_staff) == 0:
             names = ["Dr. House", "Dr. Cuddy", "Nurse Jackie", "Carla E.", "Dr. Carter", "Nurse Hathaway", "Dr. Cox", "J.D.", "Turk", "Elliot Reid"]
             roles = ["Doctor"] * 4 + ["RN"] * 6
+            test_phone = os.getenv("TEST_PHONE_NUMBER", "+1234567890")
             for name, role in zip(names, roles):
-                db.add(models.Staff(name=name, role=role))
+                db.add(models.Staff(name=name, role=role, phone_number=test_phone))
         else:
             for staff in existing_staff:
                 staff.is_available = True

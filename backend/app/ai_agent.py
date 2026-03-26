@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.prebuilt import create_react_agent
 
-from .agent_tools import get_available_staff, negotiate_shift, book_shift
+from .agent_tools import get_available_staff, coordinate_shift, book_shift
 
 load_dotenv()
 
@@ -20,7 +20,7 @@ Your mission: recruit the required number of qualified healthcare professionals 
 
 Protocol:
 1. Search available candidates (Spanish: "buscar personal disponible").
-2. Negotiate with each candidate in Spanish (be human, respect their fatigue history).
+2. Coordinate with each candidate via text message in Spanish using the coordinate_shift tool.
 3. If they accept, book the shift immediately.
 4. Stop when you meet the quota or exhaustion.
 
@@ -65,18 +65,22 @@ async def trigger_autonomous_recruitment(zone: str, required_staff: int, db: Asy
     async def get_staff_bound(zone: str) -> str:
         return await get_available_staff.ainvoke({"zone": zone, "db": db})
 
+    async def coordinate_shift_bound(candidate_name: str, zone: str, context: str) -> str:
+        return await coordinate_shift.ainvoke({"candidate_name": candidate_name, "zone": zone, "context": context, "db": db})
+
     async def book_shift_bound(candidate_name: str, zone: str) -> str:
         return await book_shift.ainvoke({"candidate_name": candidate_name, "zone": zone, "db": db})
 
     # Tool list for the agent
-    # Note: negotiate_shift doesn't need DB
-    tools = [get_staff_bound, negotiate_shift, book_shift_bound]
+    tools = [get_staff_bound, coordinate_shift_bound, book_shift_bound]
     
     # Give the bound tools better names/descriptions so the agent knows how to use them
     get_staff_bound.__name__ = "get_available_staff"
     get_staff_bound.__doc__ = get_available_staff.description
     book_shift_bound.__name__ = "book_shift"
     book_shift_bound.__doc__ = book_shift.description
+    coordinate_shift_bound.__name__ = "coordinate_shift"
+    coordinate_shift_bound.__doc__ = coordinate_shift.description
 
     llm = _build_llm()
     agent = create_react_agent(llm, tools)

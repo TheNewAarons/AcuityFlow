@@ -10,6 +10,7 @@ class Staff(Base):
     role = Column(String) # Ej: RN (Enfermera Registrada), Doctor, Técnico
     efficiency_multiplier = Column(Float, default=1.0)
     is_available = Column(Boolean, default=True)
+    phone_number = Column(String, nullable=True) # Twilio/WhatsApp contact
     shifts = relationship("Shift", back_populates="staff")
 
 class Shift(Base):

@@ -52,26 +52,39 @@ async def get_available_staff(zone: str, db: AsyncSession) -> str:
 
 
 # ------------------------------------------------------------------
-# Tool 2: Negotiate a shift with a candidate via LLM sub-call (ASYNC)
+# Tool 2: Coordinate Shift with Staff via Direct Message (ASYNC)
 # ------------------------------------------------------------------
 @tool
-async def negotiate_shift(candidate_name: str, zone: str, context: str) -> str:
+async def coordinate_shift(candidate_name: str, zone: str, context: str, db: AsyncSession) -> str:
     """
-    Initiates a natural-language negotiation with a specific staff member.
-    'context' should summarize the urgency and any relevant details (e.g., other colleagues also attending).
-    Returns a JSON object with 'decision' ('accepted' or 'declined') and 'response' (their words in Spanish).
+    Sends a real direct message (WhatsApp/SMS via Twilio) to a specific staff member.
+    'db' is automatically injected from the agent's state/context.
+    'context' should summarize the urgency and any relevant details.
+    Always use this tool to ask a human to take a shift.
     """
     from langchain_core.messages import HumanMessage, SystemMessage
-    
-    provider = os.getenv("LLM_PROVIDER", "openai").lower()
-    
-    # Check for API key
-    if provider == "google" and not os.getenv("GOOGLE_API_KEY"):
-        return json.dumps({"decision": "declined", "response": "ERROR: GOOGLE_API_KEY no está configurada."})
-    if provider == "openai" and not os.getenv("OPENAI_API_KEY"):
-        return json.dumps({"decision": "declined", "response": "ERROR: OPENAI_API_KEY no está configurada."})
+    from .communications import send_message
+    from . import models
+    from sqlalchemy.future import select
 
+    provider = os.getenv("LLM_PROVIDER", "openai").lower()
+
+    # Get Candidate Phone Number from DB
     try:
+        result = await db.execute(
+            select(models.Staff).filter(models.Staff.name == candidate_name)
+        )
+        candidate = result.scalars().first()
+        if not candidate:
+            return json.dumps({"decision": "declined", "response": f"Error: No se encontró al candidato {candidate_name}."})
+            
+        test_phone = os.getenv("TEST_PHONE_NUMBER")
+        phone = candidate.phone_number or test_phone
+        
+        if not phone:
+             return json.dumps({"decision": "declined", "response": f"Error: {candidate_name} no tiene teléfono registrado."})
+
+        # Generate the exact message to send using LLM
         if provider == "google":
             from langchain_google_genai import ChatGoogleGenerativeAI
             llm = ChatGoogleGenerativeAI(
@@ -86,37 +99,36 @@ async def negotiate_shift(candidate_name: str, zone: str, context: str) -> str:
                 api_key=os.getenv("OPENAI_API_KEY")
             )
 
-        system_prompt = f"""You are {candidate_name}, a healthcare professional in a hospital.
-    You have your own personality, preferences, and professional ethics.
-    You respond in first person, in a natural and human way (Spanish).
-    You may accept or decline based on the context provided — be realistic and sometimes decline if overworked.
-    Respond ONLY with a JSON object in this exact format:
-    {{"decision": "accepted" or "declined", "response": "Su respuesta exacta en personaje"}}"""
+        system_prompt = f"""You are the automated AI Recruitment Agent for AcuityFlow Hospital Management.
+    You need to compose a short, direct, and professional message (en español) to human staff member {candidate_name}.
+    Context: {context}
+    Zone: {zone}
+    Ask them directly if they can take the shift and tell them to reply with "SI [Zona]" o "NO [Zona]".
+    DO NOT use placeholders like [Nombre], use their actual name.
+    Respond ONLY with the exact text message you want to send them, nothing else."""
 
-        user_message = f"""El coordinador de RR.HH. te contacta para una guardia urgente en {zone}.
-    Contexto: {context}
-    ¿Aceptas el turno?"""
+        user_message = f"Escribe el mensaje de texto para alertar a {candidate_name} sobre la urgencia en {zone}."
 
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_message)]
         result = await llm.ainvoke(messages)
+        message_to_send = result.content.strip()
 
-        raw = result.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"): raw = raw[4:]
-            raw = raw.strip()
+        # Send actual Twilio message
+        success = send_message(phone, message_to_send)
+        if success:
+            # Note: A fully asynchronous human-in-the-loop would pause here and wait for a webhook.
+            # For this MVP without a guaranteed fast human response, we will simulate a positive response
+            # in order to not block the autonomous agent loop forever, BUT the message is actually sent.
+            print(f"[AGENTE IA] Mensaje real enviado a {candidate_name} al tlf {phone}.")
+            
+            # TODO: For production, we should pause and wait for the Twilio Webhook.
+            # For now, we simulate their acceptance to keep the demo flowing.
+            return json.dumps({"decision": "accepted", "response": "Mensaje enviado via Twilio. (Simulando respuesta positiva para demo)"}, ensure_ascii=False)
+        else:
+            return json.dumps({"decision": "declined", "response": "Error: falló el envío de Twilio."})
 
-        # Final cleanup for potential stray text
-        import re
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if match:
-            raw = match.group(0)
-
-        parsed = json.loads(raw)
     except Exception as e:
-        parsed = {"decision": "declined", "response": f"Lo siento, hubo un error técnico en mi terminal: {str(e)}"}
-
-    return json.dumps(parsed, ensure_ascii=False)
+         return json.dumps({"decision": "declined", "response": f"Lo siento, hubo un error técnico al enviar el mensaje: {str(e)}"})
 
 
 # ------------------------------------------------------------------
