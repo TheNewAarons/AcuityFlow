@@ -17,17 +17,30 @@ import os
 
 async def seed_db():
     async with database.SessionLocal() as db:
+        # Seed Staff
         result = await db.execute(select(models.Staff))
-        existing = result.scalars().all()
-        if len(existing) == 0:
+        existing_staff = result.scalars().all()
+        if len(existing_staff) == 0:
             names = ["Dr. House", "Dr. Cuddy", "Nurse Jackie", "Carla E.", "Dr. Carter", "Nurse Hathaway", "Dr. Cox", "J.D.", "Turk", "Elliot Reid"]
             roles = ["Doctor"] * 4 + ["RN"] * 6
             for name, role in zip(names, roles):
                 db.add(models.Staff(name=name, role=role))
         else:
-            # Reset availability on every startup so the pool never stays depleted
-            for staff in existing:
+            for staff in existing_staff:
                 staff.is_available = True
+
+        # Seed Zones
+        result = await db.execute(select(models.PatientZone))
+        if len(result.scalars().all()) == 0:
+            zones_data = [
+                {"name": "ER-Trauma", "capacity": 10},
+                {"name": "ICU", "capacity": 8},
+                {"name": "Triage", "capacity": 15},
+                {"name": "Pediatrics", "capacity": 12}
+            ]
+            for z in zones_data:
+                db.add(models.PatientZone(name=z["name"], capacity=z["capacity"]))
+
         await db.commit()
 
 # --- REDIS CONNECTION MANAGER & BROADCASTER ---
@@ -55,6 +68,21 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# Cache simple para capacidades de zona para evitar hits constantes a la DB
+zone_capacity_cache = {}
+
+async def get_zone_capacity(zone_name: str):
+    if zone_name in zone_capacity_cache:
+        return zone_capacity_cache[zone_name]
+
+    async with database.SessionLocal() as db:
+        result = await db.execute(select(models.PatientZone).filter(models.PatientZone.name == zone_name))
+        zone = result.scalars().first()
+        if zone:
+            zone_capacity_cache[zone_name] = zone.capacity
+            return zone.capacity
+    return 10 # Fallback
+
 async def redis_listener():
     """ 
     Tarea de fondo (Background Task) que escucha centralizadamente a Redis 
@@ -62,13 +90,20 @@ async def redis_listener():
     """
     redis_client = redis_async.from_url(redis_url, decode_responses=True)
     pubsub = redis_client.pubsub()
+    history_buffer = []
+    BATCH_SIZE = 10
+
     while True:
         try:
             await pubsub.subscribe("acuity_telemetry")
             async for message in pubsub.listen():
                 if message["type"] == "message":
                     data = json.loads(message["data"])
-                    score = calculate_weighted_workload(10, data["patient_count"], data["signals"])
+
+                    # Capacidad dinámica desde DB/Cache
+                    capacity = await get_zone_capacity(data["zone"])
+
+                    score = calculate_weighted_workload(capacity, data["patient_count"], data["signals"])
                     payload = {
                         "zone": data["zone"],
                         "acuity_score": score,
@@ -77,16 +112,19 @@ async def redis_listener():
                         "timestamp": data["timestamp"]
                     }
                     
-                    # Persistencia Histórica (Time-Series Local DB)
-                    async with database.SessionLocal() as db_session:
-                        history = models.ZoneHistory(
-                            zone=data["zone"],
-                            timestamp=data["timestamp"],
-                            acuity_score=score,
-                            patient_count=data["patient_count"]
-                        )
-                        db_session.add(history)
-                        await db_session.commit()
+                    # Buffer de Persistencia Histórica
+                    history_buffer.append(models.ZoneHistory(
+                        zone=data["zone"],
+                        timestamp=data["timestamp"],
+                        acuity_score=score,
+                        patient_count=data["patient_count"]
+                    ))
+
+                    if len(history_buffer) >= BATCH_SIZE:
+                        async with database.SessionLocal() as db_session:
+                            db_session.add_all(history_buffer)
+                            await db_session.commit()
+                        history_buffer = []
                         
                     await manager.broadcast(json.dumps(payload))
         except asyncio.CancelledError:
