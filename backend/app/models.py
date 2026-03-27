@@ -1,7 +1,26 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Float, DateTime
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Float, DateTime, Enum as SQLEnum
 from sqlalchemy.orm import relationship
 import datetime
+import enum
 from .database import Base
+
+class UserRole(str, enum.Enum):
+    ADMIN = "admin"
+    CHIEF_NURSE = "nurse"
+    DOCTOR = "doctor"
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    email = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+    role = Column(SQLEnum(UserRole), default=UserRole.DOCTOR)
+    is_active = Column(Boolean, default=True)
+    
+    # Relación opcional con Staff
+    staff_id = Column(Integer, ForeignKey("staff.id"), nullable=True)
+    staff = relationship("Staff")
 
 class Staff(Base):
     __tablename__ = "staff"

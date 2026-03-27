@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Users, AlertTriangle, CheckCircle, Zap } from 'lucide-react';
+import { Activity, Users, AlertTriangle, CheckCircle, Zap, LogOut } from 'lucide-react';
 import ZoneCard from './components/ZoneCard';
 import AgentLogs from './components/AgentLogs';
+import Login from './components/Login';
 
 function App() {
+  const [user, setUser] = useState(null);
   const [zones, setZones] = useState({});
   const [history, setHistory] = useState({});
   
@@ -15,8 +17,20 @@ function App() {
   const [agentStatus, setAgentStatus] = useState(null);
 
   useEffect(() => {
+    const savedUser = localStorage.getItem('user');
+    if (savedUser) {
+      setUser(JSON.parse(savedUser));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const token = localStorage.getItem('token');
+    const headers = { 'Authorization': `Bearer ${token}` };
+
     // 1. Cargar historial desde la TSDB al arrancar la UI
-    fetch('http://localhost:8000/api/history/all')
+    fetch('http://localhost:8000/api/history/all', { headers })
       .then(res => res.json())
       .then(data => { if (!data.error) setHistory(data); })
       .catch(console.error);
@@ -91,11 +105,21 @@ function App() {
     ];
 
     try {
+      const token = localStorage.getItem('token');
       const res = await fetch('http://localhost:8000/api/simulate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ base_state: baseState, events })
       });
+      
+      if (res.status === 403) {
+        alert("Acceso Denegado: Tu rol no tiene permisos para realizar simulaciones de incidentes.");
+        return;
+      }
+      
       const data = await res.json();
       
       const simMap = {};
@@ -113,11 +137,22 @@ function App() {
   const triggerAgent = async (zone) => {
     setAgentStatus({ zone, status: 'calling', message: 'Orquestando contacto...' });
     try {
+      const token = localStorage.getItem('token');
       const res = await fetch('http://localhost:8000/api/agent/trigger', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ zone, required_staff: 2 })
       });
+
+      if (res.status === 403) {
+        setAgentStatus({ zone, status: 'error', message: 'ERROR RBAC: Permisos insuficientes' });
+        setTimeout(() => setAgentStatus(null), 5000);
+        return;
+      }
+
       const data = await res.json();
       const recruited = data.recruited ?? [];
       const label = data.status === 'Success'
@@ -164,6 +199,16 @@ function App() {
     }
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setUser(null);
+  };
+
+  if (!user) {
+    return <Login onLogin={(u) => setUser(u)} />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
@@ -174,23 +219,32 @@ function App() {
             </h1>
             <p className="text-sm text-slate-500 mt-1">Orquestación de Personal Basada en Agudeza</p>
           </div>
-          <div className="flex gap-4">
-            <button 
-              onClick={simulations ? clearSimulation : runSimulation}
-              disabled={isSimulating}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-full font-bold transition-all shadow-sm ${simulations ? 'bg-slate-200 text-slate-700 hover:bg-slate-300' : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md'}`}
-            >
-              <Zap className="w-4 h-4" />
-              <span>{isSimulating ? 'Calculando...' : simulations ? 'Ocultar Gemelo Digital' : 'Activar Gemelo Digital: Incidente Masivo'}</span>
-            </button>
-
-            <div className="flex items-center space-x-2 text-sm text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full ring-1 ring-emerald-200">
-               <span className="relative flex h-3 w-3">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-              </span>
-              <span className="font-semibold">Live Telemetry</span>
+          <div className="flex gap-4 items-center">
+            {/* User Profile */}
+            <div className="flex flex-col text-right mr-2 border-r border-slate-200 pr-4">
+              <span className="text-sm font-black text-slate-800 uppercase tracking-tight">{user.username}</span>
+              <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest">{user.role}</span>
             </div>
+
+            {/* restricted action for admin/nurse only */}
+            {(user.role === 'admin' || user.role === 'nurse') && (
+              <button 
+                onClick={simulations ? clearSimulation : runSimulation}
+                disabled={isSimulating}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-full font-bold transition-all shadow-sm ${simulations ? 'bg-slate-200 text-slate-700 hover:bg-slate-300' : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md'}`}
+              >
+                <Zap className="w-4 h-4" />
+                <span>{isSimulating ? 'Calculando...' : simulations ? 'Ocultar Gemelo Digital' : 'Activar Gemelo Digital: Incidente Masivo'}</span>
+              </button>
+            )}
+
+            <button 
+              onClick={handleLogout}
+              className="p-2 text-slate-400 hover:text-red-500 transition-colors"
+              title="Cerrar Sesión"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
           </div>
         </div>
       </header>

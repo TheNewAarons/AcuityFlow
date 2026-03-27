@@ -10,13 +10,42 @@ from . import models, database
 from .acuity_engine import calculate_weighted_workload
 from .digital_twin import simulate_what_if
 from .ai_agent import trigger_autonomous_recruitment, get_agent_logs
+from .auth import verify_password, create_access_token, get_current_user, check_role
 import redis.asyncio as redis_async
 import asyncio
 import json
 import os
+from dotenv import load_dotenv
+
+# Load .env before other imports that might depend on it
+load_dotenv()
+
+import datetime
+from .auth import SECRET_KEY
+
+from .auth import get_password_hash
 
 async def seed_db():
     async with database.SessionLocal() as db:
+        # Seed Users (RBAC)
+        result = await db.execute(select(models.User))
+        if not result.scalars().first():
+            users_data_keys = [
+                ("admin", "admin@acuityflow.com", "ADMIN", models.UserRole.ADMIN),
+                ("nurse_jackie", "jackie@staff.com", "NURSE", models.UserRole.CHIEF_NURSE),
+                ("dr_house", "house@staff.com", "DOCTOR", models.UserRole.DOCTOR)
+            ]
+            for username, email, pwd_key, role in users_data_keys:
+                # Use environment variables if available, otherwise fallback to coded (still better than plain text in code)
+                # In production, these MUST be in env.
+                pwd = os.getenv(f"SEED_PWD_{username.upper()}", "AcuityFlow!2024")
+                db.add(models.User(
+                    username=username, 
+                    email=email, 
+                    hashed_password=get_password_hash(pwd), 
+                    role=role
+                ))
+
         # Seed Staff
         result = await db.execute(select(models.Staff))
         existing_staff = result.scalars().all()
@@ -152,6 +181,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Error inicializando base de datos asíncrona: {e}")
         
+    # Validar configuración de seguridad
+    if not SECRET_KEY:
+        print("❌ CRITICAL: JWT_SECRET_KEY not set in environment!")
+        # Stop in production, warn in dev
+        if os.getenv("ENV") == "production":
+            raise RuntimeError("JWT_SECRET_KEY must be set in production")
+        else:
+            print("⚠️ WARNING: Using insecure development session. Set JWT_SECRET_KEY for security.")
+        
     # Iniciar el Single-Threaded Redis Listener global
     redis_task = asyncio.create_task(redis_listener())
     
@@ -169,9 +207,9 @@ app = FastAPI(title="AcuityFlow API", version="1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173")],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"], # Be explicit
     allow_headers=["*"],
 )
 
@@ -179,11 +217,80 @@ app.add_middleware(
 def read_root():
     return {"status": "ok", "message": "AcuityFlow Engine Running (Async DB Mode + Global Redis Pool)"}
 
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    username: str
+    role: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+@app.post("/api/auth/login", response_model=Token)
+async def login(req: LoginRequest, db: AsyncSession = Depends(database.get_db)):
+    # Simple form_data body for JSON
+    username = req.username
+    password = req.password
+    
+    result = await db.execute(select(models.User).filter(models.User.username == username))
+    user = result.scalars().first()
+    
+    if not user or not verify_password(password, user.hashed_password):
+        from fastapi import HTTPException, status
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuario o contraseña incorrectos",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token = create_access_token(data={"sub": user.username})
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer", 
+        "username": user.username,
+        "role": user.role
+    }
+
+@app.get("/api/auth/me")
+async def read_users_me(current_user: models.User = Depends(get_current_user)):
+    return {
+        "username": current_user.username,
+        "email": current_user.email,
+        "role": current_user.role
+    }
+
 @app.get("/api/staff")
-async def get_staff(db: AsyncSession = Depends(database.get_db)):
+async def get_staff(
+    db: AsyncSession = Depends(database.get_db),
+    user: models.User = Depends(get_current_user)
+):
+    """
+    Returns staff list. Phone numbers (PII) are masked for non-authorized roles.
+    """
     try:
         result = await db.execute(select(models.Staff))
-        return result.scalars().all()
+        staff_members = result.scalars().all()
+        
+        # Privacy Mapping
+        can_see_pii = user.role in [models.UserRole.ADMIN, models.UserRole.CHIEF_NURSE]
+        
+        staff_data = []
+        for s in staff_members:
+            s_dict = {
+                "id": s.id,
+                "name": s.name,
+                "role": s.role,
+                "efficiency_multiplier": s.efficiency_multiplier,
+                "is_available": s.is_available
+            }
+            if can_see_pii:
+                s_dict["phone_number"] = s.phone_number
+            else:
+                s_dict["phone_number"] = "REDACTED"
+            staff_data.append(s_dict)
+            
+        return staff_data
     except Exception as e:
         return {"error": str(e)}
 
@@ -250,7 +357,10 @@ class SimulationRequest(BaseModel):
     events: List[WhatIfEvent]
 
 @app.post("/api/simulate")
-def run_simulation(request: SimulationRequest):
+async def run_simulation(
+    request: SimulationRequest, 
+    user: models.User = Depends(check_role([models.UserRole.ADMIN, models.UserRole.CHIEF_NURSE]))
+):
     events_dict = [e.model_dump() for e in request.events]
     result = simulate_what_if(request.base_state, events_dict)
     return {"projections": result}
@@ -260,7 +370,11 @@ class AgentTriggerReq(BaseModel):
     required_staff: int
 
 @app.post("/api/agent/trigger")
-async def api_trigger_agent(req: AgentTriggerReq, db: AsyncSession = Depends(database.get_db)):
+async def api_trigger_agent(
+    req: AgentTriggerReq, 
+    db: AsyncSession = Depends(database.get_db),
+    user: models.User = Depends(check_role([models.UserRole.ADMIN]))
+):
     result = await trigger_autonomous_recruitment(req.zone, req.required_staff, db)
     return result
 
