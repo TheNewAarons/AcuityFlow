@@ -13,7 +13,7 @@ function App() {
   const historyBuffer = useRef({}); // Buffer mudo para la gráfica temporal
   
   const [simulations, setSimulations] = useState(null);
-  const [isSimulating, setIsSimulating] = useState(false);
+  const [isDigitalTwinActive, setIsDigitalTwinActive] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
 
   useEffect(() => {
@@ -88,10 +88,14 @@ function App() {
       clearInterval(renderIntervalProcess);
       ws.close();
     };
-  }, []);
+  }, [user]);
 
-  const runSimulation = async () => {
-    setIsSimulating(true);
+  useEffect(() => {
+    if (!isDigitalTwinActive) {
+      setSimulations(null);
+      return;
+    }
+
     const baseState = Object.keys(zones).length > 0 
       ? Object.values(zones).map(z => ({ zone: z.zone, patients: z.patient_count }))
       : [{ zone: "ER-Trauma", patients: 12 }, { zone: "ICU", patients: 8 }];
@@ -104,35 +108,39 @@ function App() {
       }
     ];
 
-    try {
-      const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:8000/api/simulate', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ base_state: baseState, events })
-      });
-      
+    const abortController = new AbortController();
+    const token = localStorage.getItem('token');
+    
+    fetch('http://localhost:8000/api/simulate', {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ base_state: baseState, events }),
+      signal: abortController.signal
+    })
+    .then(res => {
       if (res.status === 403) {
-        alert("Acceso Denegado: Tu rol no tiene permisos para realizar simulaciones de incidentes.");
-        return;
+            alert("Acceso Denegado: Tu rol no tiene permisos para realizar simulaciones de incidentes.");
+            setIsDigitalTwinActive(false);
+        throw new Error("Forbidden");
       }
-      
-      const data = await res.json();
-      
-      const simMap = {};
-      data.projections.forEach(p => simMap[p.zone] = p);
-      setSimulations(simMap);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsSimulating(false);
-    }
-  };
+      return res.json();
+    })
+    .then(data => {
+      if (data.projections) {
+          const simMap = {};
+          data.projections.forEach(p => simMap[p.zone] = p);
+          setSimulations(simMap);
+      }
+    })
+    .catch(e => {
+        if (e.name !== 'AbortError') console.error(e);
+    });
 
-  const clearSimulation = () => setSimulations(null);
+    return () => { abortController.abort(); };
+  }, [zones, isDigitalTwinActive]);
 
   const triggerAgent = async (zone) => {
     setAgentStatus({ zone, status: 'calling', message: 'Orquestando contacto...' });
@@ -229,12 +237,11 @@ function App() {
             {/* restricted action for admin/nurse only */}
             {(user.role === 'admin' || user.role === 'nurse') && (
               <button 
-                onClick={simulations ? clearSimulation : runSimulation}
-                disabled={isSimulating}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-full font-bold transition-all shadow-sm ${simulations ? 'bg-slate-200 text-slate-700 hover:bg-slate-300' : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md'}`}
+                onClick={() => setIsDigitalTwinActive(!isDigitalTwinActive)}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-full font-bold transition-all shadow-sm ${isDigitalTwinActive ? 'bg-slate-200 text-slate-700 hover:bg-slate-300' : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md'}`}
               >
                 <Zap className="w-4 h-4" />
-                <span>{isSimulating ? 'Calculando...' : simulations ? 'Ocultar Gemelo Digital' : 'Activar Gemelo Digital: Incidente Masivo'}</span>
+                <span>{isDigitalTwinActive ? 'Ocultar Gemelo Digital' : 'Activar Gemelo Digital: Incidente Masivo'}</span>
               </button>
             )}
 
