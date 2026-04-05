@@ -29,6 +29,7 @@ class Staff(Base):
     role = Column(String) # Ej: RN (Enfermera Registrada), Doctor, Técnico
     efficiency_multiplier = Column(Float, default=1.0)
     is_available = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True, server_default='1')  # Soft delete
     phone_number = Column(String, nullable=True) # Twilio/WhatsApp contact
     shifts = relationship("Shift", back_populates="staff")
 

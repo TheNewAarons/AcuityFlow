@@ -1,9 +1,9 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
 from . import models, database
@@ -209,7 +209,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173")],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"], # Be explicit
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -269,7 +269,7 @@ async def get_staff(
     Returns staff list. Phone numbers (PII) are masked for non-authorized roles.
     """
     try:
-        result = await db.execute(select(models.Staff))
+        result = await db.execute(select(models.Staff).filter(models.Staff.is_active == True))
         staff_members = result.scalars().all()
         
         # Privacy Mapping
@@ -381,6 +381,143 @@ async def api_trigger_agent(
 @app.get("/api/agent/logs")
 async def api_get_agent_logs():
     return get_agent_logs()
+
+
+# ─────────────────────────────────────────────────────────────
+# STAFF MANAGEMENT ENDPOINTS
+# ─────────────────────────────────────────────────────────────
+
+class StaffCreate(BaseModel):
+    name: str
+    role: str
+    phone_number: str  # Required: needed for AI recruitment notifications
+    efficiency_multiplier: float = 1.0
+
+class StaffUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    phone_number: Optional[str] = None
+    efficiency_multiplier: Optional[float] = None
+
+@app.patch("/api/staff/{staff_id}/availability")
+async def toggle_staff_availability(
+    staff_id: int,
+    db: AsyncSession = Depends(database.get_db),
+    user: models.User = Depends(check_role([models.UserRole.ADMIN, models.UserRole.CHIEF_NURSE]))
+):
+    """Toggle is_available for a staff member. Accessible to Admin and Chief Nurse."""
+    result = await db.execute(
+        select(models.Staff).filter(models.Staff.id == staff_id, models.Staff.is_active == True)
+    )
+    staff = result.scalars().first()
+    if not staff:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+    staff.is_available = not staff.is_available
+    await db.commit()
+    return {"id": staff.id, "name": staff.name, "is_available": staff.is_available}
+
+@app.post("/api/staff", status_code=201)
+async def create_staff(
+    data: StaffCreate,
+    db: AsyncSession = Depends(database.get_db),
+    user: models.User = Depends(check_role([models.UserRole.ADMIN]))
+):
+    """Create a new staff member. Admin only."""
+    if not data.name.strip():
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+    if not data.phone_number.strip():
+        raise HTTPException(status_code=400, detail="Phone number is required for AI recruitment")
+    new_staff = models.Staff(
+        name=data.name.strip(),
+        role=data.role,
+        phone_number=data.phone_number.strip(),
+        efficiency_multiplier=max(0.5, min(2.0, data.efficiency_multiplier)),
+        is_available=True,
+        is_active=True
+    )
+    db.add(new_staff)
+    await db.commit()
+    await db.refresh(new_staff)
+    return {
+        "id": new_staff.id,
+        "name": new_staff.name,
+        "role": new_staff.role,
+        "phone_number": new_staff.phone_number,
+        "efficiency_multiplier": new_staff.efficiency_multiplier,
+        "is_available": new_staff.is_available
+    }
+
+@app.put("/api/staff/{staff_id}")
+async def update_staff(
+    staff_id: int,
+    data: StaffUpdate,
+    db: AsyncSession = Depends(database.get_db),
+    user: models.User = Depends(check_role([models.UserRole.ADMIN]))
+):
+    """Edit staff details. Admin only."""
+    result = await db.execute(
+        select(models.Staff).filter(models.Staff.id == staff_id, models.Staff.is_active == True)
+    )
+    staff = result.scalars().first()
+    if not staff:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+    if data.name is not None:
+        staff.name = data.name.strip()
+    if data.role is not None:
+        staff.role = data.role
+    if data.phone_number is not None:
+        staff.phone_number = data.phone_number.strip()
+    if data.efficiency_multiplier is not None:
+        staff.efficiency_multiplier = max(0.5, min(2.0, data.efficiency_multiplier))
+    await db.commit()
+    return {
+        "id": staff.id,
+        "name": staff.name,
+        "role": staff.role,
+        "phone_number": staff.phone_number,
+        "efficiency_multiplier": staff.efficiency_multiplier,
+        "is_available": staff.is_available
+    }
+
+@app.delete("/api/staff/{staff_id}")
+async def delete_staff(
+    staff_id: int,
+    db: AsyncSession = Depends(database.get_db),
+    user: models.User = Depends(check_role([models.UserRole.ADMIN]))
+):
+    """Soft-delete a staff member (is_active=False). Preserves Shift history. Admin only."""
+    result = await db.execute(select(models.Staff).filter(models.Staff.id == staff_id))
+    staff = result.scalars().first()
+    if not staff:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+    staff.is_active = False
+    await db.commit()
+    return {"status": "deleted", "id": staff_id}
+
+@app.get("/api/staff/{staff_id}/shifts")
+async def get_staff_shifts(
+    staff_id: int,
+    db: AsyncSession = Depends(database.get_db),
+    user: models.User = Depends(get_current_user)
+):
+    """Get the last 10 shifts for a specific staff member."""
+    from sqlalchemy import desc as sa_desc
+    result = await db.execute(
+        select(models.Shift)
+        .filter(models.Shift.staff_id == staff_id)
+        .order_by(sa_desc(models.Shift.start_time))
+        .limit(10)
+    )
+    shifts = result.scalars().all()
+    return [
+        {
+            "id": s.id,
+            "zone": s.zone,
+            "start_time": s.start_time.isoformat() if s.start_time else None,
+            "end_time": s.end_time.isoformat() if s.end_time else None,
+        }
+        for s in shifts
+    ]
 
 # WebSocket endpoint V2 optimizado (1 conexión Redis para N clientes Web)
 @app.websocket("/ws/acuity")

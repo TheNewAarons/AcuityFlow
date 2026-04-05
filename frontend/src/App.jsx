@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Users, AlertTriangle, CheckCircle, Zap, LogOut } from 'lucide-react';
-import ZoneCard from './components/ZoneCard';
-import AgentLogs from './components/AgentLogs';
-import Login from './components/Login';
+import { Activity, Users, AlertTriangle, CheckCircle, Zap, LogOut, LayoutDashboard, Map as MapIcon, LayoutGrid } from 'lucide-react';
+import ZoneCard    from './components/ZoneCard';
+import AgentLogs  from './components/AgentLogs';
+import Login      from './components/Login';
+import StaffPanel from './components/StaffPanel';
+import HospitalMap from './components/HospitalMap';
 
 function App() {
   const [user, setUser] = useState(null);
@@ -15,6 +17,9 @@ function App() {
   const [simulations, setSimulations] = useState(null);
   const [isDigitalTwinActive, setIsDigitalTwinActive] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
+  const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard' | 'staff'
+  const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'map'
+  const autoTriggerCooldowns = useRef({}); // Para latencia del bot
 
   useEffect(() => {
     const savedUser = localStorage.getItem('user');
@@ -89,6 +94,25 @@ function App() {
       ws.close();
     };
   }, [user]);
+
+  // ── AUTONOMÍA IA ──
+  // Si una zona entra en estado crítico, disparamos a la IA automáticamente
+  useEffect(() => {
+    if (activeTab !== 'dashboard') return;
+    const now = Date.now();
+    for (const [zoneName, data] of Object.entries(zones)) {
+      if (data.status === 'critical') {
+        const lastTrigger = autoTriggerCooldowns.current[zoneName] || 0;
+        // Cooldown de 60 segundos por zona para evitar spamming a la Base de Datos y al LLM
+        if (now - lastTrigger > 60000 && (!agentStatus || agentStatus.zone !== zoneName)) {
+           autoTriggerCooldowns.current[zoneName] = now;
+           console.log(`[Auto-IA] ZONA CRÍTICA: ${zoneName}. Disparando agente IA autónomamente...`);
+           triggerAgent(zoneName);
+        }
+      }
+    }
+  }, [zones, agentStatus, activeTab]);
+
 
   useEffect(() => {
     if (!isDigitalTwinActive) {
@@ -234,9 +258,9 @@ function App() {
               <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest">{user.role}</span>
             </div>
 
-            {/* restricted action for admin/nurse only */}
-            {(user.role === 'admin' || user.role === 'nurse') && (
-              <button 
+            {/* restricted action for admin/nurse only — Dashboard tab only */}
+            {(user.role === 'admin' || user.role === 'nurse') && activeTab === 'dashboard' && (
+              <button
                 onClick={() => setIsDigitalTwinActive(!isDigitalTwinActive)}
                 className={`flex items-center space-x-2 px-4 py-2 rounded-full font-bold transition-all shadow-sm ${isDigitalTwinActive ? 'bg-slate-200 text-slate-700 hover:bg-slate-300' : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md'}`}
               >
@@ -256,58 +280,113 @@ function App() {
         </div>
       </header>
 
-      <main>
-        <div className="max-w-7xl mx-auto py-8 sm:px-6 lg:px-8">
-          {simulations && (
-            <div className="mb-10 bg-indigo-50 border border-indigo-100 rounded-2xl p-6 shadow-sm">
-               <h3 className="text-lg font-bold text-indigo-900 mb-4 flex items-center"><Zap className="w-5 h-5 text-indigo-500 mr-2" /> Proyecciones de Gemelo Digital (Escenario: +15 Trauma Severo)</h3>
-               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {Object.values(simulations).map(sim => (
-                  <div key={`sim-${sim.zone}`} className={`bg-white rounded-xl border-l-4 shadow-sm p-4 ${getStatusColor(sim.status, true).split(' ')[2]}`}>
-                     <div className="flex justify-between">
-                       <h4 className="font-bold text-slate-800">{sim.zone}</h4>
-                       <span className={`text-xs font-bold px-2 py-1 rounded capitalize ${getStatusColor(sim.status, true).split(' ').slice(0,2).join(' ')}`}>{sim.status}</span>
-                     </div>
-                     <div className="mt-4 flex items-end justify-between">
-                        <div>
-                           <p className="text-3xl font-black text-slate-900">{sim.projected_score}%</p>
-                           <p className="text-xs text-slate-500 uppercase font-semibold tracking-wider">Acuity Proyectado</p>
-                        </div>
-                        <div className="text-right">
-                           <p className="text-lg font-bold text-slate-700">{sim.projected_patients}</p>
-                           <p className="text-xs text-slate-500">Pacientes</p>
-                        </div>
-                     </div>
-                  </div>
-                ))}
-               </div>
-            </div>
-          )}
+      {/* ── Tab Navigation ── */}
+      <div className="bg-white border-b border-slate-200 sticky top-[73px] z-10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <nav className="flex gap-1" aria-label="Tabs principales">
+            {[
+              { key: 'dashboard', label: 'Dashboard',  Icon: LayoutDashboard },
+              { key: 'staff',     label: 'Personal',   Icon: Users           },
+            ].map(({ key, label, Icon }) => (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key)}
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-bold border-b-2 transition-colors ${
+                  activeTab === key
+                    ? 'border-indigo-600 text-indigo-600'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+              </button>
+            ))}
+          </nav>
+        </div>
+      </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <main>
+        {/* ── Dashboard Tab ── */}
+        {activeTab === 'dashboard' && (
+          <div className="max-w-7xl mx-auto py-8 sm:px-6 lg:px-8">
+            {simulations && (
+              <div className="mb-10 bg-indigo-50 border border-indigo-100 rounded-2xl p-6 shadow-sm">
+                 <h3 className="text-lg font-bold text-indigo-900 mb-4 flex items-center"><Zap className="w-5 h-5 text-indigo-500 mr-2" /> Proyecciones de Gemelo Digital (Escenario: +15 Trauma Severo)</h3>
+                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {Object.values(simulations).map(sim => (
+                    <div key={`sim-${sim.zone}`} className={`bg-white rounded-xl border-l-4 shadow-sm p-4 ${getStatusColor(sim.status, true).split(' ')[2]}`}>
+                       <div className="flex justify-between">
+                         <h4 className="font-bold text-slate-800">{sim.zone}</h4>
+                         <span className={`text-xs font-bold px-2 py-1 rounded capitalize ${getStatusColor(sim.status, true).split(' ').slice(0,2).join(' ')}`}>{sim.status}</span>
+                       </div>
+                       <div className="mt-4 flex items-end justify-between">
+                          <div>
+                             <p className="text-3xl font-black text-slate-900">{sim.projected_score}%</p>
+                             <p className="text-xs text-slate-500 uppercase font-semibold tracking-wider">Acuity Proyectado</p>
+                          </div>
+                          <div className="text-right">
+                             <p className="text-lg font-bold text-slate-700">{sim.projected_patients}</p>
+                             <p className="text-xs text-slate-500">Pacientes</p>
+                          </div>
+                       </div>
+                    </div>
+                  ))}
+                 </div>
+               </div>
+            )}
+
+            {/* Selector de Vistas */}
+            <div className="mb-6 flex items-center justify-end border-b border-slate-200 pb-4">
+              <div className="bg-slate-100 p-1.5 rounded-xl flex gap-1">
+                <button 
+                  onClick={() => setViewMode('grid')} 
+                  className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-lg transition-all ${viewMode === 'grid' ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/60' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  <LayoutGrid className="w-4 h-4" /> Tarjetas
+                </button>
+                <button 
+                  onClick={() => setViewMode('map')} 
+                  className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-lg transition-all ${viewMode === 'map' ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/60' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  <MapIcon className="w-4 h-4" /> Digital Twin (Plano)
+                </button>
+              </div>
+            </div>
+
             {Object.keys(zones).length === 0 ? (
-              <div className="col-span-full border-4 border-dashed border-slate-200 rounded-xl h-64 flex flex-col items-center justify-center">
+              <div className="border-4 border-dashed border-slate-200 rounded-xl h-64 flex flex-col items-center justify-center">
                 <Activity className="w-12 h-12 text-slate-300 animate-pulse mb-3" />
                 <h2 className="text-xl text-slate-400 font-medium">Esperando conexión de monitores IoT...</h2>
-                <p className="text-sm text-slate-400 mt-2">Puedes correr el Gemelo Digital para ver proyecciones teóricas.</p>
+                <p className="text-sm text-slate-400 mt-2">Corriendo el simulador en puerto :6379 o activa el botón de Gemelo Digital arriba.</p>
+              </div>
+            ) : viewMode === 'grid' ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {Object.values(zones).map(zoneData => (
+                  <ZoneCard
+                    key={zoneData.zone}
+                    zoneData={zoneData}
+                    zoneHist={history[zoneData.zone] || []}
+                    getStatusColor={getStatusColor}
+                    getStatusIcon={getStatusIcon}
+                    triggerAgent={triggerAgent}
+                    agentStatus={agentStatus}
+                  />
+                ))}
               </div>
             ) : (
-              Object.values(zones).map(zoneData => (
-                <ZoneCard
-                  key={zoneData.zone}
-                  zoneData={zoneData}
-                  zoneHist={history[zoneData.zone] || []}
-                  getStatusColor={getStatusColor}
-                  getStatusIcon={getStatusIcon}
-                  triggerAgent={triggerAgent}
-                  agentStatus={agentStatus}
-                />
-              ))
+              <HospitalMap 
+                zones={zones} 
+                getStatusColor={getStatusColor} 
+                agentStatus={agentStatus} 
+              />
             )}
-          </div>
 
-          <AgentLogs />
-        </div>
+            <AgentLogs />
+          </div>
+        )}
+
+        {/* ── Staff Tab ── */}
+        {activeTab === 'staff' && <StaffPanel user={user} />}
       </main>
     </div>
   );
