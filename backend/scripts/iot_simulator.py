@@ -12,7 +12,7 @@ redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
 db_path = os.path.join(os.path.dirname(__file__), "..", "acuityflow.db")
 r = redis.from_url(redis_url, decode_responses=True)
 
-ZONES = ["ER-Trauma", "ICU", "Triage", "Pediatrics"]
+ZONES = ["ER-Trauma", "ICU", "Triage", "Pediatrics", "Consultas-Gral", "Farmacia", "Laboratorio", "Quirofano-1", "Medicina-Interna"]
 
 def create_random_shifts():
     """Inserta algunos turnos aleatorios para que el historial de staff no esté vacío."""

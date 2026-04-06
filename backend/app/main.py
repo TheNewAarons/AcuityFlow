@@ -46,15 +46,34 @@ async def seed_db():
                     role=role
                 ))
 
-        # Seed Staff
+        # Seed Staff and active shifts
         result = await db.execute(select(models.Staff))
         existing_staff = result.scalars().all()
         if len(existing_staff) == 0:
-            names = ["Dr. House", "Dr. Cuddy", "Nurse Jackie", "Carla E.", "Dr. Carter", "Nurse Hathaway", "Dr. Cox", "J.D.", "Turk", "Elliot Reid"]
-            roles = ["Doctor"] * 4 + ["RN"] * 6
+            staff_list = [
+                ("Dr. House", "Doctor", 1.5), ("Dr. Cuddy", "Admin/Doc", 1.2), ("Nurse Jackie", "RN", 1.0),
+                ("Carla E.", "Head Nurse", 1.2), ("Dr. Carter", "Doctor", 1.3), ("Nurse Hathaway", "RN", 1.0),
+                ("Dr. Cox", "Senior Doctor", 1.4), ("J.D.", "Resident", 0.8), ("Turk", "Surgeon", 1.2),
+                ("Elliot Reid", "Resident", 0.9), ("Abby Lockhart", "RN", 1.0), ("Neela Rasgotra", "Student", 0.7),
+                ("Perry Cox", "Senior", 1.5), ("Bob Kelso", "Admin", 0.5), ("Laverne", "RN", 1.0)
+            ]
             test_phone = os.getenv("TEST_PHONE_NUMBER", "+1234567890")
-            for name, role in zip(names, roles):
-                db.add(models.Staff(name=name, role=role, phone_number=test_phone))
+            db_staff_objects = []
+            for name, role, eff in staff_list:
+                s = models.Staff(name=name, role=role, efficiency_multiplier=eff, phone_number=test_phone)
+                db.add(s)
+                db_staff_objects.append(s)
+            
+            await db.flush() # flush to get IDs Sin commit total aún
+
+            import random
+            # Intencionalmente dejamos "Farmacia" e "ICU" vacías para validar que el Dashboard las oculta
+            active_zones = ["ER-Trauma", "Triage", "Pediatrics", "Consultas-Gral", "Laboratorio", "Quirofano-1", "Medicina-Interna"]
+            for s in db_staff_objects:
+                if random.random() < 0.9:  # 90% chance of being active in a shift
+                    z = random.choice(active_zones)
+                    shift = models.Shift(staff_id=s.id, zone=z)
+                    db.add(shift)
         else:
             for staff in existing_staff:
                 staff.is_available = True
@@ -66,7 +85,12 @@ async def seed_db():
                 {"name": "ER-Trauma", "capacity": 10},
                 {"name": "ICU", "capacity": 8},
                 {"name": "Triage", "capacity": 15},
-                {"name": "Pediatrics", "capacity": 12}
+                {"name": "Pediatrics", "capacity": 12},
+                {"name": "Consultas-Gral", "capacity": 20},
+                {"name": "Farmacia", "capacity": 5},
+                {"name": "Laboratorio", "capacity": 10},
+                {"name": "Quirofano-1", "capacity": 4},
+                {"name": "Medicina-Interna", "capacity": 25}
             ]
             for z in zones_data:
                 db.add(models.PatientZone(name=z["name"], capacity=z["capacity"]))
@@ -98,20 +122,34 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# Cache simple para capacidades de zona para evitar hits constantes a la DB
-zone_capacity_cache = {}
+import time
 
-async def get_zone_capacity(zone_name: str):
-    if zone_name in zone_capacity_cache:
-        return zone_capacity_cache[zone_name]
+# Cache simple para capacidad de personal por zona
+zone_staff_cache = {}
+
+async def get_zone_staff_metrics(zone_name: str):
+    now = time.time()
+    cached = zone_staff_cache.get(zone_name)
+    if cached and now - cached["timestamp"] < 3.0:
+        return cached
 
     async with database.SessionLocal() as db:
-        result = await db.execute(select(models.PatientZone).filter(models.PatientZone.name == zone_name))
-        zone = result.scalars().first()
-        if zone:
-            zone_capacity_cache[zone_name] = zone.capacity
-            return zone.capacity
-    return 10 # Fallback
+        # Busca staff trabajando actualmente en esa zona (Shift sin end_time)
+        query = select(models.Staff).join(models.Shift).filter(
+            models.Shift.zone == zone_name,
+            models.Shift.end_time == None,
+            models.Staff.is_active == True,
+            models.Staff.is_available == True
+        )
+        result = await db.execute(query)
+        staff_in_zone = result.scalars().all()
+        
+        staff_count = len(staff_in_zone)
+        total_eff = sum(s.efficiency_multiplier for s in staff_in_zone)
+        
+        data = {"staff_count": staff_count, "total_efficiency": total_eff, "timestamp": now}
+        zone_staff_cache[zone_name] = data
+        return data
 
 async def redis_listener():
     """ 
@@ -130,31 +168,44 @@ async def redis_listener():
                 if message["type"] == "message":
                     data = json.loads(message["data"])
 
-                    # Capacidad dinámica desde DB/Cache
-                    capacity = await get_zone_capacity(data["zone"])
-
-                    score = calculate_weighted_workload(capacity, data["patient_count"], data["signals"])
-                    payload = {
-                        "zone": data["zone"],
-                        "acuity_score": score,
-                        "patient_count": data["patient_count"],
-                        "status": "critical" if score >= 80 else "warning" if score >= 60 else "stable",
-                        "timestamp": data["timestamp"]
-                    }
+                    # Verificamos si hay staff asignado
+                    metrics = await get_zone_staff_metrics(data["zone"])
                     
-                    # Buffer de Persistencia Histórica
-                    history_buffer.append(models.ZoneHistory(
-                        zone=data["zone"],
-                        timestamp=data["timestamp"],
-                        acuity_score=score,
-                        patient_count=data["patient_count"]
-                    ))
+                    if metrics["staff_count"] == 0:
+                        payload = {
+                            "zone": data["zone"],
+                            "acuity_score": 0.0,
+                            "patient_count": data["patient_count"],
+                            "status": "unstaffed",
+                            "timestamp": data["timestamp"]
+                        }
+                        score = 0.0
+                    else:
+                        # Capacidad efectiva: cada 1.0 de eficiencia maneja base de 5 pacientes
+                        effective_capacity = metrics["total_efficiency"] * 5.0
+                        score = calculate_weighted_workload(effective_capacity, data["patient_count"], data["signals"])
+                        payload = {
+                            "zone": data["zone"],
+                            "acuity_score": score,
+                            "patient_count": data["patient_count"],
+                            "status": "critical" if score >= 80 else "warning" if score >= 60 else "stable",
+                            "timestamp": data["timestamp"]
+                        }
+                    
+                    # Buffer de Persistencia Histórica (No guardamos data unstaffed irrelevante)
+                    if metrics["staff_count"] > 0:
+                        history_buffer.append(models.ZoneHistory(
+                            zone=data["zone"],
+                            timestamp=data["timestamp"],
+                            acuity_score=score,
+                            patient_count=data["patient_count"]
+                        ))
 
-                    if len(history_buffer) >= BATCH_SIZE:
-                        async with database.SessionLocal() as db_session:
-                            db_session.add_all(history_buffer)
-                            await db_session.commit()
-                        history_buffer = []
+                        if len(history_buffer) >= BATCH_SIZE:
+                            async with database.SessionLocal() as db_session:
+                                db_session.add_all(history_buffer)
+                                await db_session.commit()
+                            history_buffer = []
                         
                     await manager.broadcast(json.dumps(payload))
         except asyncio.CancelledError:

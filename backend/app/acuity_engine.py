@@ -1,13 +1,13 @@
-def calculate_weighted_workload(base_capacity: int, patient_count: int, signals: list) -> float:
+def calculate_weighted_workload(effective_staff_capacity: float, patient_count: int, signals: list) -> float:
     """
-    Calcula el "Acuity Score" (0.0 a 100.0) de un área, donde >80 es saturación crítica.
-    En lugar de un simple ratio paciente/enfermera, evaluamos la agudeza (gravedad) de las señales IoT.
+    Calcula el "Acuity Score" (0.0 a 100.0) de un área.
+    Depende fuertemente de la 'capacidad efectiva de personal', no de camas físicas.
     """
-    if base_capacity <= 0:
+    if effective_staff_capacity <= 0:
         return 100.0
     
-    # Base load calculada por el ratio simple
-    base_load = (patient_count / base_capacity) * 40.0
+    # Base load: si la carga real de pacientes supera lo que el personal activo puede manejar, explota rápido
+    base_load = (patient_count / effective_staff_capacity) * 40.0
     
     # Carga ponderada añadida por gravedad clínica
     severity_load = 0.0

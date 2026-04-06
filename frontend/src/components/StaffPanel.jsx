@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Plus, Search, Users, UserCheck, UserX, TrendingUp } from 'lucide-react';
-import StaffCard  from './StaffCard';
+import StaffCard from './StaffCard';
 import StaffModal from './StaffModal';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -18,22 +18,22 @@ const StatCard = ({ icon, label, value, colorClass }) => (
 
 // ── Main Panel ─────────────────────────────────────────────────
 const StaffPanel = ({ user }) => {
-  const [staff,        setStaff]        = useState([]);
-  const [loading,      setLoading]      = useState(true);
-  const [search,       setSearch]       = useState('');
-  const [filter,       setFilter]       = useState('all'); // 'all' | 'available' | 'unavailable'
-  const [showModal,    setShowModal]    = useState(false);
+  const [staff, setStaff] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('all'); // 'all' | 'available' | 'unavailable'
+  const [showModal, setShowModal] = useState(false);
   const [editingStaff, setEditingStaff] = useState(null);
 
-  const token      = localStorage.getItem('token');
-  const authHdr    = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  const canEdit    = user.role === 'admin';
-  const canToggle  = user.role === 'admin' || user.role === 'nurse';
+  const token = localStorage.getItem('token');
+  const authHdr = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const canEdit = user.role === 'admin';
+  const canToggle = user.role === 'admin' || user.role === 'nurse';
 
   // ── Fetch ────────────────────────────────────────────────────
   const fetchStaff = useCallback(async () => {
     try {
-      const res  = await fetch(`${API_URL}/api/staff`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(`${API_URL}/api/staff`, { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       if (Array.isArray(data)) setStaff(data);
     } catch (e) {
@@ -85,23 +85,23 @@ const StaffPanel = ({ user }) => {
   };
 
   const openCreate = () => { setEditingStaff(null); setShowModal(true); };
-  const openEdit   = (m) => { setEditingStaff(m);   setShowModal(true); };
+  const openEdit = (m) => { setEditingStaff(m); setShowModal(true); };
 
   // ── Filtering ────────────────────────────────────────────────
   const filtered = staff.filter(s => {
     const q = search.toLowerCase();
-    const matchSearch  = s.name?.toLowerCase().includes(q) || s.role?.toLowerCase().includes(q);
-    const matchFilter  =
-      filter === 'all'         ? true :
-      filter === 'available'   ? s.is_available :
-      /* unavailable */           !s.is_available;
+    const matchSearch = s.name?.toLowerCase().includes(q) || s.role?.toLowerCase().includes(q);
+    const matchFilter =
+      filter === 'all' ? true :
+        filter === 'available' ? s.is_available :
+      /* unavailable */ !s.is_available;
     return matchSearch && matchFilter;
   });
 
   // ── Stats ────────────────────────────────────────────────────
-  const available    = staff.filter(s => s.is_available).length;
-  const unavailable  = staff.length - available;
-  const avgEff       = staff.length
+  const available = staff.filter(s => s.is_available).length;
+  const unavailable = staff.length - available;
+  const avgEff = staff.length
     ? (staff.reduce((a, s) => a + (s.efficiency_multiplier || 1), 0) / staff.length).toFixed(2)
     : '0.00';
 
@@ -134,10 +134,10 @@ const StaffPanel = ({ user }) => {
 
       {/* ── Stats row ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <StatCard icon={<Users       className="w-6 h-6 text-indigo-500"  />} label="Total Personal"   value={staff.length} colorClass="bg-indigo-50"  />
-        <StatCard icon={<UserCheck   className="w-6 h-6 text-emerald-500" />} label="Disponibles"      value={available}    colorClass="bg-emerald-50" />
-        <StatCard icon={<UserX       className="w-6 h-6 text-slate-400"   />} label="No Disponibles"   value={unavailable}  colorClass="bg-slate-50"   />
-        <StatCard icon={<TrendingUp  className="w-6 h-6 text-amber-500"   />} label="Eficiencia Prom." value={`${avgEff}x`} colorClass="bg-amber-50"   />
+        <StatCard icon={<Users className="w-6 h-6 text-indigo-500" />} label="Total Personal" value={staff.length} colorClass="bg-indigo-50" />
+        <StatCard icon={<UserCheck className="w-6 h-6 text-emerald-500" />} label="Disponibles" value={available} colorClass="bg-emerald-50" />
+        <StatCard icon={<UserX className="w-6 h-6 text-slate-400" />} label="No Disponibles" value={unavailable} colorClass="bg-slate-50" />
+        <StatCard icon={<TrendingUp className="w-6 h-6 text-amber-500" />} label="Eficiencia Prom." value={`${avgEff}x`} colorClass="bg-amber-50" />
       </div>
 
       {/* ── Controls ── */}
@@ -158,18 +158,17 @@ const StaffPanel = ({ user }) => {
         {/* Filter pills */}
         <div className="flex gap-1 bg-slate-100 p-1 rounded-xl flex-shrink-0">
           {[
-            { key: 'all',         label: 'Todos'    },
-            { key: 'available',   label: 'Disponibles'   },
-            { key: 'unavailable', label: 'No disp.'      },
+            { key: 'all', label: 'Todos' },
+            { key: 'available', label: 'Disponibles' },
+            { key: 'unavailable', label: 'No disp.' },
           ].map(f => (
             <button
               key={f.key}
               onClick={() => setFilter(f.key)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                filter === f.key
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${filter === f.key
                   ? 'bg-white text-slate-800 shadow-sm'
                   : 'text-slate-500 hover:text-slate-700'
-              }`}
+                }`}
             >
               {f.label}
             </button>

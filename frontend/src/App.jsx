@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Activity, Users, AlertTriangle, CheckCircle, Zap, LogOut, LayoutDashboard, Map as MapIcon, LayoutGrid } from 'lucide-react';
-import ZoneCard    from './components/ZoneCard';
-import AgentLogs  from './components/AgentLogs';
-import Login      from './components/Login';
+import ZoneCard from './components/ZoneCard';
+import AgentLogs from './components/AgentLogs';
+import Login from './components/Login';
 import StaffPanel from './components/StaffPanel';
 import HospitalMap from './components/HospitalMap';
 
@@ -10,10 +10,10 @@ function App() {
   const [user, setUser] = useState(null);
   const [zones, setZones] = useState({});
   const [history, setHistory] = useState({});
-  
+
   const zonesBuffer = useRef({}); // Buffer mudo para eventos actuales
   const historyBuffer = useRef({}); // Buffer mudo para la gráfica temporal
-  
+
   const [simulations, setSimulations] = useState(null);
   const [isDigitalTwinActive, setIsDigitalTwinActive] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
@@ -43,35 +43,35 @@ function App() {
     // 2. Conectar a Time-Series viva (Redis)
     const ws = new WebSocket('ws://localhost:8000/ws/acuity');
     ws.onopen = () => console.log('✅ Conectado a AcuityFlow WebSocket');
-    
+
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.error) {
         console.error("Backend reporta error:", data.error);
         return;
       }
-      
+
       // Almacenamos el latido en el buffer C
       zonesBuffer.current[data.zone] = data;
-      
+
       // Almacenar el historial
       const timeStr = new Date(data.timestamp * 1000).toLocaleTimeString();
-      if(!historyBuffer.current[data.zone]) historyBuffer.current[data.zone] = [];
+      if (!historyBuffer.current[data.zone]) historyBuffer.current[data.zone] = [];
       historyBuffer.current[data.zone].push({ time: timeStr, acuity_score: data.acuity_score });
     };
-    
+
     // Limitador de Frecuencia (Throttle): Transferencia limpia
     const renderIntervalProcess = setInterval(() => {
       let isZoneChanged = false;
       let isHistoryChanged = false;
-      
+
       if (Object.keys(zonesBuffer.current).length > 0) isZoneChanged = true;
       if (Object.keys(historyBuffer.current).length > 0) isHistoryChanged = true;
-      
+
       if (isZoneChanged) {
         setZones(prev => ({ ...prev, ...zonesBuffer.current }));
       }
-      
+
       if (isHistoryChanged) {
         setHistory(prev => {
           const next = { ...prev };
@@ -83,12 +83,12 @@ function App() {
         // Limpiamos el buffer de historia
         historyBuffer.current = {};
       }
-      
+
     }, 500);
 
     ws.onerror = (e) => console.error('❌ WebSocket Error - Asegúrate de que el backend (uvicorn) esté corriendo en el puerto 8000', e);
     ws.onclose = () => console.log('⚠️ WebSocket Desconectado');
-    
+
     return () => {
       clearInterval(renderIntervalProcess);
       ws.close();
@@ -105,9 +105,9 @@ function App() {
         const lastTrigger = autoTriggerCooldowns.current[zoneName] || 0;
         // Cooldown de 60 segundos por zona para evitar spamming a la Base de Datos y al LLM
         if (now - lastTrigger > 60000 && (!agentStatus || agentStatus.zone !== zoneName)) {
-           autoTriggerCooldowns.current[zoneName] = now;
-           console.log(`[Auto-IA] ZONA CRÍTICA: ${zoneName}. Disparando agente IA autónomamente...`);
-           triggerAgent(zoneName);
+          autoTriggerCooldowns.current[zoneName] = now;
+          console.log(`[Auto-IA] ZONA CRÍTICA: ${zoneName}. Disparando agente IA autónomamente...`);
+          triggerAgent(zoneName);
         }
       }
     }
@@ -120,7 +120,7 @@ function App() {
       return;
     }
 
-    const baseState = Object.keys(zones).length > 0 
+    const baseState = Object.keys(zones).length > 0
       ? Object.values(zones).map(z => ({ zone: z.zone, patients: z.patient_count }))
       : [{ zone: "ER-Trauma", patients: 12 }, { zone: "ICU", patients: 8 }];
 
@@ -134,34 +134,34 @@ function App() {
 
     const abortController = new AbortController();
     const token = localStorage.getItem('token');
-    
+
     fetch('http://localhost:8000/api/simulate', {
       method: 'POST',
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
       body: JSON.stringify({ base_state: baseState, events }),
       signal: abortController.signal
     })
-    .then(res => {
-      if (res.status === 403) {
-            alert("Acceso Denegado: Tu rol no tiene permisos para realizar simulaciones de incidentes.");
-            setIsDigitalTwinActive(false);
-        throw new Error("Forbidden");
-      }
-      return res.json();
-    })
-    .then(data => {
-      if (data.projections) {
+      .then(res => {
+        if (res.status === 403) {
+          alert("Acceso Denegado: Tu rol no tiene permisos para realizar simulaciones de incidentes.");
+          setIsDigitalTwinActive(false);
+          throw new Error("Forbidden");
+        }
+        return res.json();
+      })
+      .then(data => {
+        if (data.projections) {
           const simMap = {};
           data.projections.forEach(p => simMap[p.zone] = p);
           setSimulations(simMap);
-      }
-    })
-    .catch(e => {
+        }
+      })
+      .catch(e => {
         if (e.name !== 'AbortError') console.error(e);
-    });
+      });
 
     return () => { abortController.abort(); };
   }, [zones, isDigitalTwinActive]);
@@ -172,7 +172,7 @@ function App() {
       const token = localStorage.getItem('token');
       const res = await fetch('http://localhost:8000/api/agent/trigger', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
@@ -190,17 +190,17 @@ function App() {
       const label = data.status === 'Success'
         ? `Reclutados: ${recruited.join(', ')}`
         : data.status === 'Partial'
-        ? `Parcial: ${recruited.join(', ')}`
-        : recruited.length === 0
-        ? 'Sin personal disponible — reiniciando pool...'
-        : 'Nadie aceptó el turno';
+          ? `Parcial: ${recruited.join(', ')}`
+          : recruited.length === 0
+            ? 'Sin personal disponible — reiniciando pool...'
+            : 'Nadie aceptó el turno';
       setAgentStatus({ zone, status: data.status === 'Success' ? 'done' : 'error', message: label });
       // Auto-reset the staff pool when exhausted so next attempt works
       if (recruited.length === 0) {
-        fetch('http://localhost:8000/api/staff/reset', { method: 'POST' }).catch(() => {});
+        fetch('http://localhost:8000/api/staff/reset', { method: 'POST' }).catch(() => { });
       }
       setTimeout(() => setAgentStatus(null), 8000);
-    } catch(e) {
+    } catch (e) {
       setAgentStatus({ zone, status: 'error', message: 'Fallo de conexión' });
     }
   };
@@ -269,7 +269,7 @@ function App() {
               </button>
             )}
 
-            <button 
+            <button
               onClick={handleLogout}
               className="p-2 text-slate-400 hover:text-red-500 transition-colors"
               title="Cerrar Sesión"
@@ -285,17 +285,16 @@ function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <nav className="flex gap-1" aria-label="Tabs principales">
             {[
-              { key: 'dashboard', label: 'Dashboard',  Icon: LayoutDashboard },
-              { key: 'staff',     label: 'Personal',   Icon: Users           },
+              { key: 'dashboard', label: 'Dashboard', Icon: LayoutDashboard },
+              { key: 'staff', label: 'Personal', Icon: Users },
             ].map(({ key, label, Icon }) => (
               <button
                 key={key}
                 onClick={() => setActiveTab(key)}
-                className={`flex items-center gap-2 px-4 py-3 text-sm font-bold border-b-2 transition-colors ${
-                  activeTab === key
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-bold border-b-2 transition-colors ${activeTab === key
                     ? 'border-indigo-600 text-indigo-600'
                     : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
-                }`}
+                  }`}
               >
                 <Icon className="w-4 h-4" />
                 {label}
@@ -311,41 +310,41 @@ function App() {
           <div className="max-w-7xl mx-auto py-8 sm:px-6 lg:px-8">
             {simulations && (
               <div className="mb-10 bg-indigo-50 border border-indigo-100 rounded-2xl p-6 shadow-sm">
-                 <h3 className="text-lg font-bold text-indigo-900 mb-4 flex items-center"><Zap className="w-5 h-5 text-indigo-500 mr-2" /> Proyecciones de Gemelo Digital (Escenario: +15 Trauma Severo)</h3>
-                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <h3 className="text-lg font-bold text-indigo-900 mb-4 flex items-center"><Zap className="w-5 h-5 text-indigo-500 mr-2" /> Proyecciones de Gemelo Digital (Escenario: +15 Trauma Severo)</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {Object.values(simulations).map(sim => (
                     <div key={`sim-${sim.zone}`} className={`bg-white rounded-xl border-l-4 shadow-sm p-4 ${getStatusColor(sim.status, true).split(' ')[2]}`}>
-                       <div className="flex justify-between">
-                         <h4 className="font-bold text-slate-800">{sim.zone}</h4>
-                         <span className={`text-xs font-bold px-2 py-1 rounded capitalize ${getStatusColor(sim.status, true).split(' ').slice(0,2).join(' ')}`}>{sim.status}</span>
-                       </div>
-                       <div className="mt-4 flex items-end justify-between">
-                          <div>
-                             <p className="text-3xl font-black text-slate-900">{sim.projected_score}%</p>
-                             <p className="text-xs text-slate-500 uppercase font-semibold tracking-wider">Acuity Proyectado</p>
-                          </div>
-                          <div className="text-right">
-                             <p className="text-lg font-bold text-slate-700">{sim.projected_patients}</p>
-                             <p className="text-xs text-slate-500">Pacientes</p>
-                          </div>
-                       </div>
+                      <div className="flex justify-between">
+                        <h4 className="font-bold text-slate-800">{sim.zone}</h4>
+                        <span className={`text-xs font-bold px-2 py-1 rounded capitalize ${getStatusColor(sim.status, true).split(' ').slice(0, 2).join(' ')}`}>{sim.status}</span>
+                      </div>
+                      <div className="mt-4 flex items-end justify-between">
+                        <div>
+                          <p className="text-3xl font-black text-slate-900">{sim.projected_score}%</p>
+                          <p className="text-xs text-slate-500 uppercase font-semibold tracking-wider">Acuity Proyectado</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-lg font-bold text-slate-700">{sim.projected_patients}</p>
+                          <p className="text-xs text-slate-500">Pacientes</p>
+                        </div>
+                      </div>
                     </div>
                   ))}
-                 </div>
-               </div>
+                </div>
+              </div>
             )}
 
             {/* Selector de Vistas */}
             <div className="mb-6 flex items-center justify-end border-b border-slate-200 pb-4">
               <div className="bg-slate-100 p-1.5 rounded-xl flex gap-1">
-                <button 
-                  onClick={() => setViewMode('grid')} 
+                <button
+                  onClick={() => setViewMode('grid')}
                   className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-lg transition-all ${viewMode === 'grid' ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/60' : 'text-slate-500 hover:text-slate-700'}`}
                 >
                   <LayoutGrid className="w-4 h-4" /> Tarjetas
                 </button>
-                <button 
-                  onClick={() => setViewMode('map')} 
+                <button
+                  onClick={() => setViewMode('map')}
                   className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-lg transition-all ${viewMode === 'map' ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/60' : 'text-slate-500 hover:text-slate-700'}`}
                 >
                   <MapIcon className="w-4 h-4" /> Digital Twin (Plano)
@@ -361,7 +360,7 @@ function App() {
               </div>
             ) : viewMode === 'grid' ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {Object.values(zones).map(zoneData => (
+                {Object.values(zones).filter(z => z.status !== 'unstaffed').map(zoneData => (
                   <ZoneCard
                     key={zoneData.zone}
                     zoneData={zoneData}
@@ -374,10 +373,10 @@ function App() {
                 ))}
               </div>
             ) : (
-              <HospitalMap 
-                zones={zones} 
-                getStatusColor={getStatusColor} 
-                agentStatus={agentStatus} 
+              <HospitalMap
+                zones={zones}
+                getStatusColor={getStatusColor}
+                agentStatus={agentStatus}
               />
             )}
 
