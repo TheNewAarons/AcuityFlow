@@ -43,7 +43,7 @@ def simulate_what_if(base_state: list, what_if_events: list) -> list:
         CAPACITIES = {"ER-Trauma": 10, "ICU": 8, "Triage": 15, "Pediatrics": 12}
         cap = CAPACITIES.get(zone, 10)
 
-        projected_score = calculate_weighted_workload(base_capacity=cap, patient_count=patients, signals=signals_simulated)
+        projected_score = calculate_weighted_workload(effective_staff_capacity=cap, patient_count=patients, signals=signals_simulated)
         
         projections.append({
             "zone": zone,
